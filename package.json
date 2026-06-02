@@ -1,0 +1,44 @@
+{
+  "name": "onelineflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant AI invoice-to-cash automation platform for QuickBooks Online",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.6.1",
+  "engines": {
+    "node": ">=20.11.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/**\" run build && pnpm -r --filter \"./services/**\" run build",
+    "typecheck": "tsc --build --pretty",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,md,yml,yaml}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "migrate": "tsx packages/db/src/migrate.ts",
+    "migrate:status": "tsx packages/db/src/migrate.ts --status",
+    "dev:api": "tsx watch services/api/src/main.ts",
+    "dev:extraction": "tsx watch services/worker-extraction/src/main.ts",
+    "dev:posting": "tsx watch services/worker-posting/src/main.ts",
+    "stack:up": "docker compose up -d --wait",
+    "stack:down": "docker compose down -v",
+    "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "@typescript-eslint/eslint-plugin": "^8.19.0",
+    "@typescript-eslint/parser": "^8.19.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

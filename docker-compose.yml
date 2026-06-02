@@ -1,0 +1,92 @@
+name: onelineflow
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: onelineflow
+      POSTGRES_PASSWORD: onelineflow
+      POSTGRES_DB: onelineflow
+      # Deterministic collation so index ordering matches production.
+      POSTGRES_INITDB_ARGS: '--locale=C --encoding=UTF8'
+    command:
+      - postgres
+      # Sized for a dev box. Production values live in infra/, not here.
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=16MB
+      # Partition pruning and partition-wise joins are the whole point of the
+      # schema; they are off by default.
+      - -c
+      - enable_partitionwise_join=on
+      - -c
+      - enable_partitionwise_aggregate=on
+      - -c
+      - log_min_duration_statement=500
+    ports:
+      # Defaults deliberately avoid 5432/6379 so the stack coexists with a
+      # locally installed Postgres/Redis. Override in .env if you prefer.
+      - '${POSTGRES_PORT:-5442}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U onelineflow -d onelineflow']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      # BullMQ requires noeviction; any other policy silently drops jobs.
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - 'yes'
+    ports:
+      - '${REDIS_PORT:-6390}:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: onelineflow
+      MINIO_ROOT_PASSWORD: onelineflow-dev-secret
+    ports:
+      - '${MINIO_PORT:-9010}:9000'
+      - '${MINIO_CONSOLE_PORT:-9011}:9001'
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 onelineflow onelineflow-dev-secret &&
+      mc mb --ignore-existing local/onelineflow-documents &&
+      mc version enable local/onelineflow-documents
+      "
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

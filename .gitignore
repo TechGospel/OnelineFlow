@@ -1,0 +1,31 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.turbo/
+
+# Environment — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local data / secrets
+*.pem
+*.key
+secrets/
+tmp/
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
