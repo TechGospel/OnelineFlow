@@ -1,0 +1,25 @@
+{
+  "name": "@onelineflow/worker-posting",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/main.js",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@onelineflow/core": "workspace:*",
+    "@onelineflow/crypto": "workspace:*",
+    "@onelineflow/db": "workspace:*",
+    "@onelineflow/observability": "workspace:*",
+    "@onelineflow/qbo": "workspace:*",
+    "@onelineflow/queue": "workspace:*",
+    "ioredis": "^5.4.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  }
+}
