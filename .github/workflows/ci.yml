@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.18.1'
+
+jobs:
+  static:
+    name: Typecheck, lint, format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm format:check
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+
+  database:
+    name: Migrations and tenant isolation
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: onelineflow
+          POSTGRES_PASSWORD: onelineflow
+          POSTGRES_DB: onelineflow
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U onelineflow"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply migrations
+        run: |
+          for f in db/migrations/*.sql; do
+            echo "== $f"
+            PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow \
+              -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      # This is the security-critical gate. RLS that is enabled but ineffective
+      # looks identical to RLS that works, right up until a tenant sees another
+      # tenant's ledger. The assertions run as a NON-SUPERUSER role, because a
+      # superuser bypasses RLS unconditionally and would pass while proving
+      # nothing.
+      - name: Verify tenant isolation
+        run: |
+          PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow -q -c \
+            "DO \$\$ BEGIN
+               IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='onelineflow_app_test') THEN
+                 CREATE ROLE onelineflow_app_test LOGIN PASSWORD 'test' IN ROLE onelineflow_app;
+               END IF;
+             END \$\$;"
+          PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow \
+            -v ON_ERROR_STOP=1 -f db/verify_rls.sql
+
+      - name: Assert migrations are idempotent
+        run: |
+          # Re-running must be a no-op. A migration that only works on a clean
+          # database will fail on the second replica during a rolling deploy.
+          PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow -tAc \
+            "SELECT count(*) FROM pg_tables WHERE schemaname='public'" | tee /tmp/before
+          PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow -q -c \
+            "SELECT ensure_monthly_partitions('invoices',1,3);"
+          PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow -q -c \
+            "SELECT ensure_monthly_partitions('invoices',1,3);"
+
+  python:
+    name: Python reconciler
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: python/reconciler }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -e '.[dev]'
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy onelineflow_recon
+      - run: pytest -q
