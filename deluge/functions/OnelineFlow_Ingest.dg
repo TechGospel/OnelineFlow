@@ -1,0 +1,165 @@
+/*
+ * OnelineFlow_Ingest
+ * -----------------
+ * Zoho Creator -> onelineFlow ingestion.
+ *
+ * WHERE THIS SITS IN THE ARCHITECTURE
+ *
+ * Deluge is the tenant-facing adapter, NOT the transaction engine. It owns the
+ * UI, the tenant's own business rules, and the human approval step. It does not
+ * call QuickBooks and it does not own idempotency.
+ *
+ * Why: Zoho Creator's API quotas and Deluge's per-invocation execution limits
+ * are orders of magnitude below the platform's target throughput. A single
+ * tenant at a few thousand invoices a day is fine here; the platform as a whole
+ * is not. Pushing the QBO write into the Node core also means one implementation
+ * of the duplicate guards instead of one per tenant app.
+ *
+ * For a SINGLE-TENANT deployment that will never need that scale, the direct
+ * path in QBO_DirectPost.dg is a legitimate alternative — it carries the same
+ * guards, implemented in Deluge.
+ *
+ * SETUP
+ *   Setup > Connections > Custom Service (OAuth2 or API key) named "onelineflow"
+ *   Settings form fields: API_Base_URL, Tenant_Slug
+ */
+
+string OnelineFlow.ingest(int recordId)
+{
+    settings = Settings[ID == 1];
+    inv      = Invoice_Intake[ID == recordId];
+
+    // -----------------------------------------------------------------
+    // Guard: never re-send a record that already reached the platform.
+    // Deluge workflows can fire more than once (edit-on-save, bulk update,
+    // a user double-clicking). This check plus the platform's content
+    // fingerprint means a resend is a no-op rather than a second invoice.
+    // -----------------------------------------------------------------
+    if(inv.OnelineFlow_Invoice_Id != null && inv.OnelineFlow_Invoice_Id != "")
+    {
+        return inv.OnelineFlow_Invoice_Id;
+    }
+
+    if(inv.Document == null || inv.Document == "")
+    {
+        inv.Status = "Error - No Document";
+        return "";
+    }
+
+    // Creator stores the file; fetch the bytes to forward.
+    fileObj = invokeurl
+    [
+        url: "https://creator.zoho.com" + inv.Document
+        type: GET
+    ];
+
+    payload = Map();
+    payload.put("content", zoho.encryption.base64Encode(fileObj));
+    payload.put("contentType", OnelineFlow.mimeFor(inv.Document));
+    payload.put("filename", inv.Document.getSuffix("/"));
+    payload.put("source", "zoho_creator");
+    // sourceRef lets support trace a platform invoice back to this Creator row.
+    payload.put("sourceRef", "creator:" + recordId);
+
+    headers = Map();
+    headers.put("Content-Type", "application/json");
+    // Deluge cannot generate a UUID; the record id is already unique per tenant
+    // and stable across retries, which is exactly what an idempotency key needs.
+    headers.put("Idempotency-Key", "creator-" + settings.Tenant_Slug + "-" + recordId);
+
+    response = invokeurl
+    [
+        url: settings.API_Base_URL + "/v1/invoices"
+        type: POST
+        parameters: payload.toString()
+        headers: headers
+        connection: "onelineflow"
+    ];
+
+    // -----------------------------------------------------------------
+    // Response handling.
+    //
+    // 201 = created, 200 = duplicate that resolved to an existing invoice.
+    // Both are success. Treating the duplicate as an error is a common bug
+    // that turns a correct idempotent retry into a support ticket.
+    // -----------------------------------------------------------------
+    if(response.containKey("invoiceId") && response.get("invoiceId") != null)
+    {
+        inv.OnelineFlow_Invoice_Id = response.get("invoiceId");
+        inv.Status = if(response.get("duplicate") == true, "Duplicate", "Submitted");
+        inv.Submitted_At = zoho.currenttime;
+        inv.Error_Message = null;
+
+        insert into Integration_Log
+        [
+            Record_Ref = recordId
+            Direction  = "outbound"
+            Endpoint   = "/v1/invoices"
+            Status     = "OK"
+            Payload    = response.toString()
+            Logged     = zoho.currenttime
+        ];
+        return response.get("invoiceId");
+    }
+
+    // Failure. Store enough to diagnose, and let the sweeper retry.
+    errMsg = if(response.containKey("error"), response.get("error").get("message"), response.toString());
+    inv.Status = "Retry Queued";
+    inv.Error_Message = errMsg;
+
+    insert into Integration_Log
+    [
+        Record_Ref = recordId
+        Direction  = "outbound"
+        Endpoint   = "/v1/invoices"
+        Status     = "FAIL"
+        Payload    = response.toString()
+        Logged     = zoho.currenttime
+    ];
+    return "";
+}
+
+
+/*
+ * Retry sweeper. Schedule every 15 minutes.
+ *
+ * Bounded to 25 records per run: Deluge has a hard ceiling on statements and
+ * execution time per invocation, and a run that dies halfway leaves state
+ * ambiguous. Small batches always finish.
+ */
+void OnelineFlow.retrySweep()
+{
+    pending = Invoice_Intake[Status == "Retry Queued" && Retry_Count < 5]
+              sort by Modified_Time asc range 1:25;
+
+    for each p in pending
+    {
+        p.Retry_Count = p.Retry_Count + 1;
+        result = OnelineFlow.ingest(p.ID);
+        if(result == "" && p.Retry_Count >= 5)
+        {
+            // Stop retrying and surface it. Silent infinite retry is how a
+            // broken connection goes unnoticed for a week.
+            p.Status = "Failed - Needs Attention";
+            sendmail
+            [
+                from: zoho.adminuserid
+                to: Settings[ID == 1].Ops_Email
+                subject: "onelineFlow ingestion failed after 5 attempts"
+                message: "Creator record " + p.ID + ": " + p.Error_Message
+            ];
+        }
+    }
+}
+
+
+string OnelineFlow.mimeFor(string filePath)
+{
+    lower = filePath.toLowerCase();
+    if(lower.endsWith(".pdf"))  { return "application/pdf"; }
+    if(lower.endsWith(".png"))  { return "image/png"; }
+    if(lower.endsWith(".jpg") || lower.endsWith(".jpeg")) { return "image/jpeg"; }
+    if(lower.endsWith(".tif") || lower.endsWith(".tiff")) { return "image/tiff"; }
+    if(lower.endsWith(".webp")) { return "image/webp"; }
+    return "application/octet-stream";
+}

@@ -1,0 +1,388 @@
+/*
+ * QBO_DirectPost
+ * --------------
+ * Deluge posting a Bill directly to QuickBooks Online.
+ *
+ * WHEN TO USE THIS
+ *
+ * Only for a SINGLE-TENANT Creator deployment — one company, its own Creator
+ * app, its own QBO realm, and volume comfortably inside Zoho's API quotas
+ * (roughly: low thousands of invoices per day, with headroom).
+ *
+ * At platform scale the Node core owns this path instead. See
+ * OnelineFlow_Ingest.dg for the reasoning.
+ *
+ * WHAT MAKES IT SAFE
+ *
+ * The same four guards the platform uses, implemented in Deluge:
+ *   1. stored QBO_Bill_Id           — already posted, stop
+ *   2. Intuit `requestid`           — server-side dedupe of a replayed request
+ *   3. recovery query by DocNumber  — resolves an unknown outcome
+ *   4. Fault-body inspection        — QBO returns faults with HTTP 200
+ *
+ * SETUP
+ *   Setup > Connections > Custom Service (OAuth 2.0), named "qbo"
+ *     Auth URL     https://appcenter.intuit.com/connect/oauth2
+ *     Token URL    https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
+ *     Refresh URL  same as Token URL
+ *     Scope        com.intuit.quickbooks.accounting
+ *   Zoho then stores and auto-refreshes the tokens. Never hand-roll this: the
+ *   refresh token rotates on every use, and losing one value permanently breaks
+ *   the connection.
+ */
+
+void QBO.postBill(int recId)
+{
+    settings = Settings[ID == 1];
+    inv      = Invoice_Intake[ID == recId];
+
+    // ---- Guard 1: already posted -----------------------------------------
+    if(inv.QBO_Bill_Id != null && inv.QBO_Bill_Id != "")
+    {
+        info "Invoice " + recId + " already posted as " + inv.QBO_Bill_Id;
+        return;
+    }
+
+    if(inv.Status != "Approved" && inv.Status != "Posting")
+    {
+        info "Invoice " + recId + " is " + inv.Status + "; not eligible to post.";
+        return;
+    }
+
+    // Deterministic across retries — that is the entire point. Only an audited
+    // admin force-repost increments Post_Attempt_Epoch.
+    epoch     = if(inv.Post_Attempt_Epoch == null, 0, inv.Post_Attempt_Epoch);
+    requestId = "of-" + settings.Tenant_Slug + "-" + recId + "-" + epoch;
+
+    // ---- Guard 3: recover an unknown outcome ------------------------------
+    // Status 'Posting' with no bill id means a previous run died mid-flight.
+    // QBO may or may not have committed it. Ask before acting; a blind retry
+    // here is exactly how duplicates are created.
+    if(inv.Status == "Posting")
+    {
+        existing = QBO.findBillByDocNumber(inv.Invoice_Number);
+        if(existing != null)
+        {
+            inv.QBO_Bill_Id   = existing.get("Id");
+            inv.QBO_SyncToken = existing.get("SyncToken");
+            inv.Status        = "Posted";
+            inv.Posted_On     = zoho.currenttime;
+            info "Recovered: bill already existed as " + existing.get("Id");
+            return;
+        }
+    }
+
+    inv.Status = "Posting";
+
+    // ---- Resolve references ----------------------------------------------
+    vendorId = QBO.getEntityId("Vendor", "DisplayName", inv.Vendor_Name);
+    if(vendorId == "")
+    {
+        inv.Status = "Blocked - Vendor Not Found";
+        inv.Error_Message = "Vendor '" + inv.Vendor_Name + "' does not exist in QuickBooks.";
+        return;
+    }
+
+    // ---- Build lines and verify the arithmetic ----------------------------
+    lines    = List();
+    lineSum  = 0.0;
+
+    for each li in inv.Line_Items
+    {
+        acctId = QBO.getEntityId("Account", "Name", li.GL_Code);
+        if(acctId == "")
+        {
+            inv.Status = "Blocked - Account Not Found";
+            inv.Error_Message = "GL code '" + li.GL_Code + "' does not exist in QuickBooks.";
+            return;
+        }
+
+        detail = Map();
+        detail.put("AccountRef", {"value": acctId});
+        detail.put("BillableStatus", "NotBillable");
+        if(li.Tax_Code != null && li.Tax_Code != "")
+        {
+            taxId = QBO.getEntityId("TaxCode", "Name", li.Tax_Code);
+            if(taxId != "") { detail.put("TaxCodeRef", {"value": taxId}); }
+        }
+
+        line = Map();
+        line.put("DetailType", "AccountBasedExpenseLineDetail");
+        line.put("Amount", li.Amount.toDecimal());
+        line.put("Description", li.Description.left(4000));
+        line.put("AccountBasedExpenseLineDetail", detail);
+        lines.add(line);
+
+        lineSum = lineSum + li.Amount.toDecimal();
+    }
+
+    if(lines.size() == 0)
+    {
+        inv.Status = "Blocked - No Line Items";
+        return;
+    }
+
+    // QBO will happily accept a bill whose lines do not match the stated total.
+    // The break then surfaces weeks later with no trace of its origin. Refuse.
+    total   = inv.Total_Amount.toDecimal();
+    taxAmt  = if(inv.Tax_Amount == null, 0.0, inv.Tax_Amount.toDecimal());
+    delta   = abs(total - lineSum);
+    deltaNet = abs(total - (lineSum + taxAmt));
+
+    if(delta > 0.005 && deltaNet > 0.005)
+    {
+        inv.Status = "Blocked - Total Mismatch";
+        inv.Error_Message = "Lines sum to " + lineSum + " but the total is " + total + ".";
+        return;
+    }
+
+    // DocNumber is capped at 21 chars. Keep the tail: suffixes carry the
+    // sequence number that actually distinguishes one invoice from the next.
+    docNo = inv.Invoice_Number.trim();
+    if(docNo.length() > 21) { docNo = docNo.right(21); }
+
+    bill = Map();
+    bill.put("VendorRef",   {"value": vendorId});
+    bill.put("TxnDate",     inv.Invoice_Date.toString("yyyy-MM-dd"));
+    if(inv.Due_Date != null) { bill.put("DueDate", inv.Due_Date.toString("yyyy-MM-dd")); }
+    bill.put("DocNumber",   docNo);
+    bill.put("PrivateNote", "Creator ref #" + recId + " | conf " + inv.AI_Confidence);
+    bill.put("Line",        lines);
+
+    // ---- Post (Guard 2: requestid) ----------------------------------------
+    url = settings.QBO_Base_URL + "/v3/company/" + settings.Realm_ID
+        + "/bill?minorversion=" + settings.Minor_Version
+        + "&requestid=" + requestId;
+
+    response = invokeurl
+    [
+        url: url
+        type: POST
+        parameters: bill.toString()
+        headers: {"Content-Type":"application/json", "Accept":"application/json"}
+        connection: "qbo"
+    ];
+
+    QBO.handleResponse(recId, response, "Bill");
+}
+
+
+/*
+ * Response handling.
+ *
+ * QBO returns faults inside HTTP 200 bodies. Code that only checks the status
+ * treats a validation failure as success and stores a nonexistent entity id —
+ * the single most common defect in QBO integrations.
+ */
+void QBO.handleResponse(int recId, map response, string entity)
+{
+    inv = Invoice_Intake[ID == recId];
+
+    if(response.containKey("Fault"))
+    {
+        errs = response.get("Fault").get("Error");
+        e    = errs.get(0);
+        code = e.get("code");
+        msg  = e.get("Message") + " :: " + e.get("Detail");
+
+        insert into QBO_Log
+        [
+            Record_Ref = recId  Direction = "response"  Status = "FAULT"
+            Error_Code = code   Payload = response.toString()  Logged = zoho.currenttime
+        ];
+
+        if(code == "6240")
+        {
+            // Duplicate DocNumber: the bill already exists. Link to it rather
+            // than creating a second one.
+            existing = QBO.findBillByDocNumber(inv.Invoice_Number);
+            if(existing != null)
+            {
+                inv.QBO_Bill_Id   = existing.get("Id");
+                inv.QBO_SyncToken = existing.get("SyncToken");
+                inv.Status        = "Posted";
+                inv.Posted_On     = zoho.currenttime;
+                inv.Error_Message = "Linked to a pre-existing bill in QuickBooks.";
+            }
+            else
+            {
+                inv.Status = "Blocked - Duplicate";
+                inv.Error_Message = msg;
+            }
+        }
+        else if(code == "3200" || code == "3100" || code == "100")
+        {
+            // Auth. Retrying cannot fix a dead grant — a human must reconnect.
+            inv.Status = "Blocked - Reauth Required";
+            inv.Error_Message = msg;
+            sendmail
+            [
+                from: zoho.adminuserid
+                to: Settings[ID == 1].Ops_Email
+                subject: "QuickBooks connection needs re-authorisation"
+                message: msg
+            ];
+        }
+        else if(code == "3001")
+        {
+            inv.Status = "Retry Queued";   // throttled
+            inv.Error_Message = msg;
+        }
+        else
+        {
+            // Everything else is wrong with what WE sent. The same payload will
+            // fail identically, so park it for review instead of retrying.
+            inv.Status = "Error - Review";
+            inv.Error_Message = msg;
+        }
+        return;
+    }
+
+    b = response.get(entity);
+    if(b == null || b.get("Id") == null)
+    {
+        inv.Status = "Error - Review";
+        inv.Error_Message = "QuickBooks returned no " + entity + " id.";
+        return;
+    }
+
+    inv.QBO_Bill_Id   = b.get("Id");
+    inv.QBO_SyncToken = b.get("SyncToken");   // required for any later edit
+    inv.Status        = "Posted";
+    inv.Posted_On     = zoho.currenttime;
+    inv.Error_Message = null;
+
+    insert into QBO_Log
+    [
+        Record_Ref = recId  Direction = "response"  Status = "OK"
+        Payload = response.toString()  Logged = zoho.currenttime
+    ];
+}
+
+
+/*
+ * The recovery oracle: does a bill with this DocNumber already exist?
+ *
+ * Returns null when there is no match OR when there is more than one — two
+ * matches means DocNumber is not unique in this realm and cannot serve as an
+ * oracle, so we refuse to guess and let a human reconcile.
+ */
+map QBO.findBillByDocNumber(string invoiceNumber)
+{
+    if(invoiceNumber == null || invoiceNumber == "") { return null; }
+
+    settings = Settings[ID == 1];
+    docNo    = invoiceNumber.trim();
+    if(docNo.length() > 21) { docNo = docNo.right(21); }
+
+    q = "select Id, SyncToken, DocNumber from Bill where DocNumber = '"
+      + QBO.escapeLiteral(docNo) + "' maxresults 2";
+
+    response = invokeurl
+    [
+        url: settings.QBO_Base_URL + "/v3/company/" + settings.Realm_ID
+             + "/query?query=" + zoho.encryption.urlEncode(q)
+             + "&minorversion=" + settings.Minor_Version
+        type: GET
+        headers: {"Accept":"application/json"}
+        connection: "qbo"
+    ];
+
+    if(response.containKey("Fault")) { return null; }
+
+    qr = response.get("QueryResponse");
+    if(qr == null || !qr.containKey("Bill")) { return null; }
+
+    bills = qr.get("Bill");
+    if(bills.size() != 1) { return null; }
+    return bills.get(0);
+}
+
+
+/*
+ * Reference resolution with a local cache.
+ *
+ * Without the cache every invoice costs 2-4 extra QBO reads. Vendor sets are
+ * small and stable, so the steady-state hit rate is very high and the saving is
+ * the difference between fitting inside the rate limit and not.
+ */
+string QBO.getEntityId(string entityType, string nameField, string name)
+{
+    if(name == null || name.trim() == "") { return ""; }
+
+    key    = QBO.normaliseKey(name);
+    cached = QBO_Reference_Cache[Entity_Type == entityType && Lookup_Key == key];
+
+    if(cached.count() > 0)
+    {
+        // Refresh anything older than 24h so a rename in QBO does not serve a
+        // stale id indefinitely.
+        if(cached.Refreshed_At > zoho.currenttime.subHour(24))
+        {
+            return cached.QBO_Id;
+        }
+    }
+
+    settings = Settings[ID == 1];
+    q = "select * from " + entityType + " where " + nameField + " = '"
+      + QBO.escapeLiteral(name) + "' maxresults 2";
+
+    response = invokeurl
+    [
+        url: settings.QBO_Base_URL + "/v3/company/" + settings.Realm_ID
+             + "/query?query=" + zoho.encryption.urlEncode(q)
+             + "&minorversion=" + settings.Minor_Version
+        type: GET
+        headers: {"Accept":"application/json"}
+        connection: "qbo"
+    ];
+
+    if(response.containKey("Fault")) { return ""; }
+
+    qr = response.get("QueryResponse");
+    if(qr == null || !qr.containKey(entityType)) { return ""; }
+
+    rows = qr.get(entityType);
+    // Ambiguous is not a match. Guessing posts to the wrong ledger account.
+    if(rows.size() != 1) { return ""; }
+
+    found = rows.get(0);
+    qboId = found.get("Id");
+
+    if(cached.count() > 0)
+    {
+        cached.QBO_Id = qboId;
+        cached.Refreshed_At = zoho.currenttime;
+    }
+    else
+    {
+        insert into QBO_Reference_Cache
+        [
+            Entity_Type  = entityType
+            Lookup_Key   = key
+            QBO_Id       = qboId
+            Display_Name = name
+            Refreshed_At = zoho.currenttime
+        ];
+    }
+    return qboId;
+}
+
+
+/*
+ * QBO's query language has no bind parameters, so escaping is the only defence.
+ * A vendor legitimately named "O'Brien & Sons" breaks an unescaped query; a
+ * crafted name could alter it. Escape the escape character first, then the quote.
+ */
+string QBO.escapeLiteral(string value)
+{
+    out = value.replaceAll("\\", "\\\\", true);
+    out = out.replaceAll("'", "\\'", true);
+    return out;
+}
+
+
+string QBO.normaliseKey(string name)
+{
+    return name.toLowerCase().replaceAll("[^a-z0-9]", "", false);
+}
