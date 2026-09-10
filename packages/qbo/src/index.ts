@@ -1,3 +1,4 @@
+export * from './credit-note.js';
 export * from './bill-mapper.js';
 export * from './client.js';
 export * from './faults.js';
