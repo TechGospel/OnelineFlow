@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "rootDir": "..",
+    "types": ["node"]
+  },
+  "include": ["**/*.ts", "../services/relay/src/**/*.ts"]
+}

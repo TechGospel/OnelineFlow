@@ -100,6 +100,69 @@ jobs:
           PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow -q -c \
             "SELECT ensure_monthly_partitions('invoices',1,3);"
 
+  integration:
+    name: End-to-end smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: onelineflow
+          POSTGRES_PASSWORD: onelineflow
+          POSTGRES_DB: onelineflow
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U onelineflow"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: onelineflow
+          MINIO_ROOT_PASSWORD: onelineflow-dev-secret
+          MINIO_DEFAULT_BUCKETS: onelineflow-documents
+        ports: ['9000:9000']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations
+        run: |
+          for f in db/migrations/*.sql; do
+            PGPASSWORD=onelineflow psql -h localhost -U onelineflow -d onelineflow \
+              -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      # Exercises the pieces unit tests cannot: a committed outbox row becoming a
+      # real BullMQ job, redelivery NOT producing a duplicate, and bytes
+      # round-tripping through object storage.
+      - name: Smoke test
+        env:
+          DATABASE_URL: postgres://onelineflow:onelineflow@localhost:5432/onelineflow
+          REDIS_URL: redis://localhost:6379
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET_DOCUMENTS: onelineflow-documents
+          S3_ACCESS_KEY_ID: onelineflow
+          S3_SECRET_ACCESS_KEY: onelineflow-dev-secret
+          S3_FORCE_PATH_STYLE: 'true'
+          ENCRYPTION_ROOT_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          QBO_CLIENT_ID: ci
+          QBO_CLIENT_SECRET: ci
+          QBO_REDIRECT_URI: http://localhost:3000/v1/qbo/callback
+          GOOGLE_AI_API_KEY: ci
+        run: pnpm smoke
+
   python:
     name: Python reconciler
     runs-on: ubuntu-latest
