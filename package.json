@@ -32,7 +32,8 @@
     "gen:crypto-fixtures": "tsx scripts/gen-crypto-fixtures.ts",
     "dev:scheduler": "tsx watch services/scheduler/src/main.ts",
     "smoke:concurrency": "tsx scripts/smoke-concurrency.ts",
-    "smoke:all": "pnpm smoke && pnpm smoke:concurrency"
+    "smoke:all": "pnpm smoke && pnpm smoke:concurrency && pnpm smoke:ui",
+    "smoke:ui": "tsx scripts/smoke-review-ui.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
