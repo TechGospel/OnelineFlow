@@ -1,0 +1,71 @@
+{{- $root := . -}}
+{{/*
+Queue-depth autoscaling via KEDA.
+
+A CPU-based HPA does not work for these workers: extraction spends its life
+awaiting model responses, so CPU stays near zero while the backlog grows to
+thousands. Scaling on the Redis list length is the only signal that tracks
+actual demand.
+*/}}
+{{- range $svc, $queue := dict "extraction" "extraction" "posting" "posting" }}
+{{- $cfg := index $root.Values.services $svc }}
+{{- if and $cfg.keda $cfg.keda.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "onelineflow.fullname" $root }}-{{ $svc }}
+  labels: {{- include "onelineflow.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "onelineflow.fullname" $root }}-{{ $svc }}
+  minReplicaCount: {{ $cfg.keda.minReplicas }}
+  maxReplicaCount: {{ $cfg.keda.maxReplicas }}
+  pollingInterval: 15
+  # Long cooldown. A worker killed mid-post leaves an invoice in `posting` with
+  # an unknown outcome, so scaling down eagerly costs recovery work.
+  cooldownPeriod: 300
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+        scaleDown:
+          # Five minutes of stability before removing a pod.
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Percent
+              value: 25
+              periodSeconds: 60
+  triggers:
+    - type: redis
+      metadata:
+        addressFromEnv: REDIS_URL
+        listName: bull:{{ $queue }}:wait
+        listLength: {{ $cfg.keda.listLength | quote }}
+      authenticationRef: {}
+{{- end }}
+{{- end }}
+
+{{- if .Values.services.api.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "onelineflow.fullname" . }}-api
+  labels: {{- include "onelineflow.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "onelineflow.fullname" . }}-api
+  minReplicas: {{ .Values.services.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.services.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.api.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

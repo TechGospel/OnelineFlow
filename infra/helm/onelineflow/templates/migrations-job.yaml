@@ -1,0 +1,32 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "onelineflow.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels: {{- include "onelineflow.labels" . | nindent 4 }}
+  annotations:
+    # Runs BEFORE any pod rolls. The runner takes a Postgres advisory lock, so
+    # a concurrent hook from another release blocks rather than racing.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels: {{- include "onelineflow.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "onelineflow.fullname" . }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "onelineflow.image" . }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          command: ['node', 'packages/db/dist/migrate.js']
+          env: {{- include "onelineflow.env" . | nindent 12 }}
+          envFrom:
+            - secretRef: { name: {{ .Values.existingSecret }} }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+{{- end }}

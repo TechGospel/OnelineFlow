@@ -1,0 +1,6 @@
+apiVersion: v2
+name: onelineflow
+description: Multi-tenant AI invoice-to-cash automation for QuickBooks Online
+type: application
+version: 0.1.0
+appVersion: '0.1.0'

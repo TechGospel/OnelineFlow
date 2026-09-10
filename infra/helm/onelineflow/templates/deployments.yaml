@@ -1,0 +1,54 @@
+{{- $root := . -}}
+{{- range $svc := list "api" "relay" "extraction" "posting" "scheduler" }}
+{{- $cfg := index $root.Values.services $svc }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "onelineflow.fullname" $root }}-{{ $svc }}
+  labels:
+    {{- include "onelineflow.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svc }}
+spec:
+  {{- if eq $svc "scheduler" }}
+  # Exactly one. Recreate rather than RollingUpdate so two schedulers never
+  # overlap during a deploy.
+  replicas: 1
+  strategy: { type: Recreate }
+  {{- else if and $cfg.keda $cfg.keda.enabled }}
+  # replicas omitted on purpose: KEDA owns it. Setting it here would fight the
+  # ScaledObject on every reconcile.
+  {{- else if not (and $cfg.autoscaling $cfg.autoscaling.enabled) }}
+  replicas: {{ $cfg.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "onelineflow.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $svc }}
+  template:
+    metadata:
+      labels:
+        {{- include "onelineflow.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $svc }}
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: {{ $root.Values.config.METRICS_PORT | quote }}
+    spec:
+      {{- $entry := dict "root" $root "name" $svc "resources" $cfg.resources }}
+      {{- if eq $svc "api" }}
+      {{- $_ := set $entry "command" (list "node" "services/api/dist/main.js") }}
+      {{- $_ := set $entry "httpPort" $cfg.port }}
+      {{- else if eq $svc "relay" }}
+      {{- $_ := set $entry "command" (list "node" "services/relay/dist/main.js") }}
+      {{- else if eq $svc "extraction" }}
+      {{- $_ := set $entry "command" (list "node" "services/worker-extraction/dist/main.js") }}
+      {{- $_ := set $entry "extraEnv" (list (dict "name" "WORKER_CONCURRENCY" "value" (toString $cfg.concurrency))) }}
+      {{- else if eq $svc "posting" }}
+      {{- $_ := set $entry "command" (list "node" "services/worker-posting/dist/main.js") }}
+      {{- $_ := set $entry "extraEnv" (list (dict "name" "WORKER_CONCURRENCY" "value" (toString $cfg.concurrency))) }}
+      {{- else }}
+      {{- $_ := set $entry "command" (list "node" "services/scheduler/dist/main.js") }}
+      {{- end }}
+      {{- include "onelineflow.podSpec" $entry | nindent 6 }}
+{{- end }}

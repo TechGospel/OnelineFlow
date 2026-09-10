@@ -1,0 +1,11 @@
+# Helm templates are Go templates, not YAML. Prettier cannot parse them and
+# reformatting mangles the control flow.
+infra/helm/**/templates/**
+
+# Generated from the real Node crypto implementation; hand-editing would defeat
+# the point of the interop test.
+python/reconciler/tests/fixtures/**
+
+pnpm-lock.yaml
+dist/
+coverage/
