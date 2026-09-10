@@ -163,6 +163,24 @@ jobs:
           GOOGLE_AI_API_KEY: ci
         run: pnpm smoke
 
+      # Real-database races: the CAS claim, the dedup-key claim, and the
+      # guarantee that a failed request never returns a tenant-tainted
+      # connection to the pool. None of these can be tested with mocks.
+      - name: Concurrency and recovery smoke
+        env:
+          DATABASE_URL: postgres://onelineflow:onelineflow@localhost:5432/onelineflow
+          REDIS_URL: redis://localhost:6379
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET_DOCUMENTS: onelineflow-documents
+          S3_ACCESS_KEY_ID: onelineflow
+          S3_SECRET_ACCESS_KEY: onelineflow-dev-secret
+          ENCRYPTION_ROOT_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          QBO_CLIENT_ID: ci
+          QBO_CLIENT_SECRET: ci
+          QBO_REDIRECT_URI: http://localhost:3000/v1/qbo/callback
+          GOOGLE_AI_API_KEY: ci
+        run: pnpm smoke:concurrency
+
   python:
     name: Python reconciler
     runs-on: ubuntu-latest
@@ -176,4 +194,7 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy onelineflow_recon
+      # Includes the cross-language crypto interop suite, which opens boxes
+      # sealed by the real Node implementation. Drift between the two would
+      # otherwise surface as "the reconciler cannot read any tenant's token".
       - run: pytest -q

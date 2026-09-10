@@ -25,6 +25,10 @@ during an incident.
 | **Document object storage**                                     | Complete, content-addressed, round-trip verified                |
 | **JWT verification plugin**                                     | Complete, 16 tests — the API is now authenticated               |
 | **Approval / rejection endpoints**                              | Complete, limits and overrides enforced server-side             |
+| **Reconciler QBO fetch loop + CLI**                             | Complete, paginating and self-throttling, 31 Python tests       |
+| **Cross-language crypto interop**                               | Complete, verified against fixtures from the real Node sealer   |
+| **Maintenance scheduler**                                       | Complete, partitions + token expiry + stall detection, 10 tests |
+| **Concurrency / recovery integration tests**                    | Complete, 14 checks against real Postgres                       |
 
 ## Not yet built
 
@@ -36,20 +40,7 @@ _None. All four launch blockers are implemented and verified end to end._
 
 ### Important
 
-1. **Reconciler QuickBooks fetch loop and CLI.** The comparison logic and SQL
-   are done; the code that pages through QBO bills and the `onelineflow-recon`
-   entrypoint are not.
-2. **Partition maintenance scheduler.** `ensure_monthly_partitions` exists and is
-   idempotent, but nothing calls it on a schedule. Three months of runway from
-   the last manual run.
-3. **Refresh-token expiry alerting.** `findExpiringSoon` is implemented and
-   unused. Intuit's refresh tokens die after ~100 days of inactivity; a dormant
-   connection fails silently.
-4. **Broader integration coverage.** `scripts/smoke-relay.ts` now covers the
-   outbox→queue path and object storage against the real stack, and it caught a
-   bug unit tests could not (BullMQ rejects a custom job id containing ':', which
-   would have stalled the entire pipeline). Still uncovered: the CAS transition
-   race under genuine concurrency, and the posting worker's recovery path.
+_None. All four are implemented and verified._
 
 ### Later
 
@@ -61,6 +52,17 @@ _None. All four launch blockers are implemented and verified end to end._
 9. Credit notes (`VendorCredit`) and multi-currency FX rate sourcing.
 10. Per-tenant AI budget enforcement — the column and metric exist, the check
     before the model call does not.
+
+## Known operational caveats
+
+- **Migration 0005 backfill is unbatched.** It rewrites every `invoices` and
+  `invoice_line_items` row whose `created_at` carries sub-millisecond precision.
+  Fine at current volume; at production scale it must be batched per partition.
+- **The scheduler is single-replica by design.** Every task is idempotent, so a
+  second replica is harmless but pointless. Alert on the `/healthz` staleness
+  check rather than running two.
+- **Partition detaching is disabled by default** (`retainMonths: null`). Ageing
+  out financial history is an explicit human decision, not a timer.
 
 ## Load testing not yet done
 

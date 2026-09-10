@@ -36,6 +36,9 @@
     },
     {
       "path": "./services/relay"
+    },
+    {
+      "path": "./services/scheduler"
     }
   ]
 }

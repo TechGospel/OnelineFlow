@@ -128,6 +128,33 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  scripts:
+    dependencies:
+      '@onelineflow/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@onelineflow/crypto':
+        specifier: workspace:*
+        version: link:../packages/crypto
+      '@onelineflow/db':
+        specifier: workspace:*
+        version: link:../packages/db
+      '@onelineflow/observability':
+        specifier: workspace:*
+        version: link:../packages/observability
+      '@onelineflow/queue':
+        specifier: workspace:*
+        version: link:../packages/queue
+      '@onelineflow/relay':
+        specifier: workspace:*
+        version: link:../services/relay
+      '@onelineflow/storage':
+        specifier: workspace:*
+        version: link:../packages/storage
+      ioredis:
+        specifier: ^5.4.2
+        version: 5.11.1
+
   services/api:
     dependencies:
       '@onelineflow/core':
@@ -181,6 +208,21 @@ importers:
       '@onelineflow/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+
+  services/scheduler:
+    dependencies:
+      '@onelineflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@onelineflow/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@onelineflow/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@onelineflow/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
 
   services/worker-extraction:
     dependencies:

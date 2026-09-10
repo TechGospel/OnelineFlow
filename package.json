@@ -28,7 +28,11 @@
     "stack:down": "docker compose down -v",
     "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache && rm -rf node_modules",
     "dev:relay": "tsx watch services/relay/src/main.ts",
-    "smoke": "tsx scripts/smoke-relay.ts"
+    "smoke": "tsx scripts/smoke-relay.ts",
+    "gen:crypto-fixtures": "tsx scripts/gen-crypto-fixtures.ts",
+    "dev:scheduler": "tsx watch services/scheduler/src/main.ts",
+    "smoke:concurrency": "tsx scripts/smoke-concurrency.ts",
+    "smoke:all": "pnpm smoke && pnpm smoke:concurrency"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
