@@ -24,6 +24,7 @@ import {
 } from '@onelineflow/core';
 import { Database, enqueueOutbox, InvoiceRepository } from '@onelineflow/db';
 import { DocumentStore } from '@onelineflow/storage';
+import { decideFromBudget, SpendTracker } from '@onelineflow/budget';
 import {
   GoogleAiProvider,
   needsSecondOpinion,
@@ -115,6 +116,8 @@ function buildProviders(): { primary: ExtractionProvider; secondary?: Extraction
 }
 
 const providers = buildProviders();
+const spend = new SpendTracker(redis, { keyPrefix: cfg.QUEUE_PREFIX });
+
 const fairGate = new TenantFairGate(redis, {
   keyPrefix: cfg.QUEUE_PREFIX,
   defaultLimit: 50,
@@ -164,6 +167,35 @@ const worker = new Worker<ExtractionJob>(
 
           const bytes = await documents.get(doc.storage_key);
 
+          /* --- Budget gate --------------------------------------------- */
+          // Checked BEFORE spending, and it never drops the invoice. An invoice
+          // is a payable the business owes; refusing to process it because our
+          // model spend hit a ceiling turns our cost problem into their
+          // late-payment problem.
+          const budget = await spend.status(client, tenantId);
+          const decision = decideFromBudget(budget);
+
+          if (decision.action === 'route_to_review') {
+            await invoices.transitionStatus(client, {
+              id: invoiceId,
+              createdAt,
+              from: 'extracting',
+              to: 'needs_review',
+              expectedVersion: claimed.version,
+              patch: {
+                findings: JSON.stringify([
+                  { code: 'AI_BUDGET_EXHAUSTED', severity: 'blocking', message: decision.reason },
+                ]),
+              },
+            });
+            invoiceTransitions.inc({ from: 'extracting', to: 'needs_review' });
+            logger.warn(
+              { tenantId, utilisation: budget.utilisation },
+              'AI budget exhausted; routing to manual review',
+            );
+            return { status: 'needs_review', reason: 'budget_exhausted' };
+          }
+
           /* --- Primary extraction ------------------------------------- */
           const started = Date.now();
           let primary: ExtractionResult;
@@ -188,6 +220,10 @@ const worker = new Worker<ExtractionJob>(
             { provider: primary.provider, model: primary.model },
             Number(primary.costMicros),
           );
+          // Recorded AFTER the call: true cost is only known from the response
+          // token counts. A burst can therefore overshoot by one round of
+          // in-flight calls, which is why the hard stop sits above 1.0.
+          await spend.record(client, tenantId, primary.costMicros);
 
           /* --- Conditional second opinion ------------------------------ */
           let secondary: ExtractionResult | undefined;
@@ -196,7 +232,16 @@ const worker = new Worker<ExtractionJob>(
             consensusTriggerThreshold: cfg.AI_CONSENSUS_TRIGGER_THRESHOLD,
           };
 
-          if (providers.secondary && needsSecondOpinion(primary, opts)) {
+          // Degrade before stopping: at the warning threshold we drop the
+          // second opinion, which is the expensive half. The confidence gate
+          // still routes anything uncertain to a human, so this trades
+          // automation for cost without weakening the safety story.
+          const allowSecondOpinion = decision.action === 'proceed';
+          if (!allowSecondOpinion) {
+            logger.info({ tenantId, reason: decision.reason }, 'skipping second model');
+          }
+
+          if (allowSecondOpinion && providers.secondary && needsSecondOpinion(primary, opts)) {
             try {
               secondary = await providers.secondary.extract({
                 documentBytes: bytes,
@@ -207,6 +252,7 @@ const worker = new Worker<ExtractionJob>(
                 { provider: secondary.provider, model: secondary.model },
                 Number(secondary.costMicros),
               );
+              await spend.record(client, tenantId, secondary.costMicros);
             } catch (err) {
               // A failed second opinion must not fail the invoice. Fall through
               // with the primary alone; the confidence gate then routes it to a

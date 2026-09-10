@@ -16,6 +16,7 @@
     "@onelineflow/observability": "workspace:*",
     "@onelineflow/queue": "workspace:*",
     "ioredis": "^5.4.2",
-    "@onelineflow/storage": "workspace:*"
+    "@onelineflow/storage": "workspace:*",
+    "@onelineflow/budget": "workspace:*"
   }
 }
