@@ -12,7 +12,6 @@
  */
 
 import { Redis } from 'ioredis';
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   asInvoiceId,
   asTenantId,
@@ -24,6 +23,7 @@ import {
   ValidationError,
 } from '@onelineflow/core';
 import { Database, enqueueOutbox, InvoiceRepository } from '@onelineflow/db';
+import { DocumentStore } from '@onelineflow/storage';
 import {
   GoogleAiProvider,
   needsSecondOpinion,
@@ -71,14 +71,14 @@ const db = new Database({
 const redis = new Redis(cfg.REDIS_URL, { maxRetriesPerRequest: null });
 const invoices = new InvoiceRepository();
 
-const s3 = new S3Client({
+const documents = new DocumentStore({
   endpoint: cfg.S3_ENDPOINT,
   region: cfg.S3_REGION,
+  bucket: cfg.S3_BUCKET_DOCUMENTS,
+  accessKeyId: cfg.S3_ACCESS_KEY_ID,
+  secretAccessKey: cfg.S3_SECRET_ACCESS_KEY,
   forcePathStyle: cfg.S3_FORCE_PATH_STYLE,
-  credentials: {
-    accessKeyId: cfg.S3_ACCESS_KEY_ID,
-    secretAccessKey: cfg.S3_SECRET_ACCESS_KEY,
-  },
+  serverSideEncryption: cfg.S3_SERVER_SIDE_ENCRYPTION,
 });
 
 /**
@@ -121,14 +121,6 @@ const fairGate = new TenantFairGate(redis, {
   leaseMs: cfg.AI_REQUEST_TIMEOUT_MS * 3,
 });
 
-async function fetchDocument(storageKey: string): Promise<Buffer> {
-  const res = await s3.send(
-    new GetObjectCommand({ Bucket: cfg.S3_BUCKET_DOCUMENTS, Key: storageKey }),
-  );
-  if (!res.Body) throw new ValidationError(`Document ${storageKey} has no body`);
-  return Buffer.from(await res.Body.transformToByteArray());
-}
-
 const worker = new Worker<ExtractionJob>(
   QUEUE_NAMES.extraction,
   async (job) => {
@@ -170,7 +162,7 @@ const worker = new Worker<ExtractionJob>(
           const doc = rows[0];
           if (!doc) throw new ValidationError(`Document ${job.data.documentId} not found`);
 
-          const bytes = await fetchDocument(doc.storage_key);
+          const bytes = await documents.get(doc.storage_key);
 
           /* --- Primary extraction ------------------------------------- */
           const started = Date.now();
@@ -361,6 +353,11 @@ shutdown.register({
 });
 shutdown.register({ name: 'redis', order: 30, run: () => Promise.resolve(redis.disconnect()) });
 shutdown.register({ name: 'database', order: 40, run: () => db.close() });
+shutdown.register({
+  name: 'document-store',
+  order: 50,
+  run: () => Promise.resolve(documents.destroy()),
+});
 
 logger.info(
   {

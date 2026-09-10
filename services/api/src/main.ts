@@ -17,9 +17,12 @@ import { ConnectionRepository, Database, InvoiceRepository } from '@onelineflow/
 import { EnvKeyring } from '@onelineflow/crypto';
 import { createLogger, metricsText, ShutdownManager } from '@onelineflow/observability';
 import { buildConnection, QueueRegistry } from '@onelineflow/queue';
+import { DocumentStore } from '@onelineflow/storage';
 import { registerIngestRoutes } from './routes/ingest.js';
 import { registerOAuthRoutes } from './routes/oauth.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
+import { registerInvoiceRoutes } from './routes/invoices.js';
+import { jwtAuthPlugin } from './plugins/jwt-auth.js';
 
 const cfg = loadConfig();
 const logger = createLogger({
@@ -41,6 +44,15 @@ const db = new Database({
 const redis = new Redis(cfg.REDIS_URL, { maxRetriesPerRequest: null });
 const queues = new QueueRegistry(buildConnection(cfg.REDIS_URL), cfg.QUEUE_PREFIX);
 const keyring = new EnvKeyring(cfg.ENCRYPTION_ROOT_KEY, cfg.ENCRYPTION_KEY_VERSION);
+const documents = new DocumentStore({
+  endpoint: cfg.S3_ENDPOINT,
+  region: cfg.S3_REGION,
+  bucket: cfg.S3_BUCKET_DOCUMENTS,
+  accessKeyId: cfg.S3_ACCESS_KEY_ID,
+  secretAccessKey: cfg.S3_SECRET_ACCESS_KEY,
+  forcePathStyle: cfg.S3_FORCE_PATH_STYLE,
+  serverSideEncryption: cfg.S3_SERVER_SIDE_ENCRYPTION,
+});
 
 const app = Fastify({
   // Fastify 5 takes a pre-built logger as `loggerInstance`; `logger` is for
@@ -65,6 +77,7 @@ const deps = {
   logger,
   invoices: new InvoiceRepository(),
   connections: new ConnectionRepository(keyring),
+  documents,
 };
 
 export type ApiDeps = typeof deps;
@@ -104,24 +117,40 @@ app.get('/healthz', async (_req, reply) => {
  * that cannot enqueue would accept invoices and silently drop them.
  */
 app.get('/readyz', async (_req, reply) => {
-  const [dbOk, redisOk] = await Promise.all([
+  // Object storage is included deliberately: a pod that cannot write documents
+  // would accept invoices and lose the bytes, which is worse than refusing them.
+  const [dbOk, redisOk, storageOk] = await Promise.all([
     db.healthy(),
     redis
       .ping()
       .then(() => true)
       .catch(() => false),
+    documents.healthy(),
   ]);
-  const ok = dbOk && redisOk;
-  return reply.status(ok ? 200 : 503).send({ ok, db: dbOk, redis: redisOk });
+  const ok = dbOk && redisOk && storageOk;
+  return reply.status(ok ? 200 : 503).send({ ok, db: dbOk, redis: redisOk, storage: storageOk });
 });
 
 app.get('/metrics', async (_req, reply) =>
   reply.header('Content-Type', 'text/plain; version=0.0.4').send(await metricsText()),
 );
 
+// Registered BEFORE the routes so its onRequest hook runs for all of them.
+await app.register(jwtAuthPlugin, {
+  deps,
+  options: {
+    publicKeyPem: cfg.JWT_PUBLIC_KEY,
+    jwksJson: cfg.JWT_JWKS,
+    issuer: cfg.JWT_ISSUER,
+    audience: cfg.JWT_AUDIENCE,
+    clockToleranceSec: 60,
+  },
+});
+
 registerOAuthRoutes(app, deps);
 registerIngestRoutes(app, deps);
 registerWebhookRoutes(app, deps);
+registerInvoiceRoutes(app, deps);
 
 shutdown.register({
   name: 'http-server',
@@ -132,6 +161,11 @@ shutdown.register({
 shutdown.register({ name: 'queues', order: 20, run: () => queues.close() });
 shutdown.register({ name: 'redis', order: 30, run: () => Promise.resolve(redis.disconnect()) });
 shutdown.register({ name: 'database', order: 40, run: () => db.close() });
+shutdown.register({
+  name: 'document-store',
+  order: 50,
+  run: () => Promise.resolve(documents.destroy()),
+});
 
 await app.listen({ port: cfg.HTTP_PORT, host: cfg.HTTP_HOST });
 logger.info({ port: cfg.HTTP_PORT }, 'api listening');

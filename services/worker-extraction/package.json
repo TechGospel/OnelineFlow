@@ -10,12 +10,12 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.717.0",
     "@onelineflow/ai": "workspace:*",
     "@onelineflow/core": "workspace:*",
     "@onelineflow/db": "workspace:*",
     "@onelineflow/observability": "workspace:*",
     "@onelineflow/queue": "workspace:*",
-    "ioredis": "^5.4.2"
+    "ioredis": "^5.4.2",
+    "@onelineflow/storage": "workspace:*"
   }
 }

@@ -6,10 +6,23 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
-    { "path": "../../packages/ai" },
-    { "path": "../../packages/core" },
-    { "path": "../../packages/db" },
-    { "path": "../../packages/observability" },
-    { "path": "../../packages/queue" }
+    {
+      "path": "../../packages/ai"
+    },
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/db"
+    },
+    {
+      "path": "../../packages/observability"
+    },
+    {
+      "path": "../../packages/queue"
+    },
+    {
+      "path": "../../packages/storage"
+    }
   ]
 }

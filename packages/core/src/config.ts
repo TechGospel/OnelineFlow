@@ -38,6 +38,12 @@ export const configSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   S3_FORCE_PATH_STYLE: bool.default('true'),
+  /**
+   * Request-level SSE ('AES256' / 'aws:kms'). Leave unset when the bucket has
+   * default encryption, which is the better arrangement. MinIO rejects it
+   * unless a KMS is configured, so local development leaves it empty.
+   */
+  S3_SERVER_SIDE_ENCRYPTION: z.enum(['AES256', 'aws:kms']).optional(),
 
   /* --- Encryption ------------------------------------------------------ */
   /**
@@ -75,7 +81,12 @@ export const configSchema = z.object({
   HTTP_PORT: intFrom(1, 65_535).default(3000),
   HTTP_HOST: z.string().min(1).default('0.0.0.0'),
   HTTP_BODY_LIMIT_BYTES: intFrom(1024, 100 * 1024 * 1024).default(25 * 1024 * 1024),
+  /** SPKI PEM. Simple deployments and tests. */
   JWT_PUBLIC_KEY: z.string().min(1).optional(),
+  /** JWKS JSON. Preferred in production: supports rotation without a deploy. */
+  JWT_JWKS: z.string().min(1).optional(),
+  JWT_ISSUER: z.string().min(1).default('https://auth.onelineflow.local'),
+  JWT_AUDIENCE: z.string().min(1).default('onelineflow-api'),
 
   /* --- Observability --------------------------------------------------- */
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
@@ -86,10 +97,26 @@ export type Config = z.infer<typeof configSchema>;
 
 let cached: Config | undefined;
 
+/**
+ * Treat an empty environment variable as unset.
+ *
+ * `.env` files conventionally carry `OPENAI_API_KEY=` as a placeholder meaning
+ * "not configured". Without this, zod sees a present-but-empty string and an
+ * `.optional()` field fails min(1) — so the process refuses to boot with a
+ * message that reads like the value is wrong rather than absent.
+ */
+function stripEmpty(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && value.trim() !== '') out[key] = value;
+  }
+  return out;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (cached) return cached;
 
-  const parsed = configSchema.safeParse(env);
+  const parsed = configSchema.safeParse(stripEmpty(env));
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
@@ -118,8 +145,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!cfg.QBO_WEBHOOK_VERIFIER_TOKEN) {
       throw new ConfigError('QBO_WEBHOOK_VERIFIER_TOKEN is required in production.');
     }
-    if (!cfg.JWT_PUBLIC_KEY) {
-      throw new ConfigError('JWT_PUBLIC_KEY is required in production.');
+    if (!cfg.JWT_PUBLIC_KEY && !cfg.JWT_JWKS) {
+      throw new ConfigError(
+        'One of JWT_PUBLIC_KEY or JWT_JWKS is required in production. Without it the\n' +
+          'API cannot verify tokens and every request would be rejected.',
+      );
     }
   }
 
