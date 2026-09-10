@@ -71,7 +71,16 @@ export function registerIngestRoutes(app: AppInstance, deps: ApiDeps): void {
 
     const fingerprint = documentFingerprint(auth.tenantId, bytes);
     const invoiceId = newUuid() as InvoiceId;
-    const storageKey = `${auth.tenantId}/${fingerprint.slice(0, 2)}/${fingerprint}`;
+
+    // Store the bytes BEFORE the transaction commits.
+    //
+    // Ordering matters and this is the safe direction. If the upload succeeds
+    // and the commit then fails, we leak an orphan object — content-addressed,
+    // so a retry reuses it, and a lifecycle rule sweeps the rest. The reverse
+    // order would commit an invoice whose document does not exist, and the
+    // extraction worker would fail on it forever.
+    const stored = await deps.documents.put(auth.tenantId, fingerprint, bytes, input.contentType);
+    const storageKey = stored.key;
 
     const result = await deps.db.withTenant(auth.tenantId, async (client) =>
       deps.db.transaction(client, async (tx) => {

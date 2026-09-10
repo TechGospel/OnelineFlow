@@ -15,10 +15,10 @@ one per tenant app.
 
 ## Files
 
-| File                             | Use                                                    |
-| -------------------------------- | ------------------------------------------------------ |
+| File                              | Use                                                    |
+| --------------------------------- | ------------------------------------------------------ |
 | `functions/OnelineFlow_Ingest.dg` | Creator → platform. Multi-tenant deployment.           |
-| `functions/QBO_DirectPost.dg`    | Creator → QuickBooks directly. **Single-tenant only.** |
+| `functions/QBO_DirectPost.dg`     | Creator → QuickBooks directly. **Single-tenant only.** |
 
 Pick one. Running both against the same records will post twice.
 

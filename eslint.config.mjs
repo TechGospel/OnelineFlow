@@ -22,7 +22,11 @@ export default [
     languageOptions: {
       parser: tsparser,
       parserOptions: {
-        project: ['./packages/*/tsconfig.json', './services/*/tsconfig.json'],
+        project: [
+          './packages/*/tsconfig.json',
+          './services/*/tsconfig.json',
+          './scripts/tsconfig.json',
+        ],
         tsconfigRootDir: import.meta.dirname,
       },
     },

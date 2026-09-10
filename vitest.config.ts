@@ -32,8 +32,11 @@ export default defineConfig({
       '@onelineflow/qbo': new URL('./packages/qbo/src/index.ts', import.meta.url).pathname,
       '@onelineflow/ai': new URL('./packages/ai/src/index.ts', import.meta.url).pathname,
       '@onelineflow/queue': new URL('./packages/queue/src/index.ts', import.meta.url).pathname,
-      '@onelineflow/observability': new URL('./packages/observability/src/index.ts', import.meta.url)
-        .pathname,
+      '@onelineflow/storage': new URL('./packages/storage/src/index.ts', import.meta.url).pathname,
+      '@onelineflow/observability': new URL(
+        './packages/observability/src/index.ts',
+        import.meta.url,
+      ).pathname,
     },
   },
 });
