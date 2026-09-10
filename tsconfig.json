@@ -1,15 +1,41 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/crypto" },
-    { "path": "./packages/db" },
-    { "path": "./packages/observability" },
-    { "path": "./packages/qbo" },
-    { "path": "./packages/queue" },
-    { "path": "./packages/ai" },
-    { "path": "./services/api" },
-    { "path": "./services/worker-extraction" },
-    { "path": "./services/worker-posting" }
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/crypto"
+    },
+    {
+      "path": "./packages/db"
+    },
+    {
+      "path": "./packages/observability"
+    },
+    {
+      "path": "./packages/qbo"
+    },
+    {
+      "path": "./packages/queue"
+    },
+    {
+      "path": "./packages/ai"
+    },
+    {
+      "path": "./services/api"
+    },
+    {
+      "path": "./services/worker-extraction"
+    },
+    {
+      "path": "./services/worker-posting"
+    },
+    {
+      "path": "./packages/storage"
+    },
+    {
+      "path": "./services/relay"
+    }
   ]
 }
