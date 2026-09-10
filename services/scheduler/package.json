@@ -1,0 +1,18 @@
+{
+  "name": "@onelineflow/scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/main.js",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@onelineflow/core": "workspace:*",
+    "@onelineflow/crypto": "workspace:*",
+    "@onelineflow/db": "workspace:*",
+    "@onelineflow/observability": "workspace:*"
+  }
+}
