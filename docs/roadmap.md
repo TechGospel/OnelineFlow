@@ -29,6 +29,12 @@ during an incident.
 | **Cross-language crypto interop**                               | Complete, verified against fixtures from the real Node sealer   |
 | **Maintenance scheduler**                                       | Complete, partitions + token expiry + stall detection, 10 tests |
 | **Concurrency / recovery integration tests**                    | Complete, 14 checks against real Postgres                       |
+| **Per-tenant AI budget enforcement**                            | Complete, Redis counter + PG reconciliation, degrade-then-stop  |
+| **Credit notes (VendorCredit) + FX**                            | Complete, 19 tests                                              |
+| **Vendor link / create flow**                                   | Complete, suggestions-first to prevent duplicates               |
+| **Grafana dashboard + Prometheus alerts**                       | Complete, 17 panels, 14 alert rules                             |
+| **Helm chart with queue-depth autoscaling**                     | Complete, `helm lint` clean, 15 resources render                |
+| **Review UI**                                                   | Complete, server-rendered, escaping verified end to end         |
 
 ## Not yet built
 
@@ -44,14 +50,7 @@ _None. All four are implemented and verified._
 
 ### Later
 
-5. Review UI for `needs_review` invoices.
-6. Vendor-creation flow (deliberately manual today — auto-creation on a typo
-   permanently pollutes a tenant's chart of accounts).
-7. Terraform / Helm deployment, HPA on queue depth.
-8. Grafana dashboards and alert rules from the metrics already emitted.
-9. Credit notes (`VendorCredit`) and multi-currency FX rate sourcing.
-10. Per-tenant AI budget enforcement — the column and metric exist, the check
-    before the model call does not.
+_None. All six are implemented and verified._
 
 ## Known operational caveats
 
@@ -64,7 +63,7 @@ _None. All four are implemented and verified._
 - **Partition detaching is disabled by default** (`retainMonths: null`). Ageing
   out financial history is an explicit human decision, not a timer.
 
-## Load testing not yet done
+## Next: load testing (now the highest-value remaining work)
 
 The scale claims in the README are **design targets derived from the stated
 requirements, not measured results.** Before trusting them, run:

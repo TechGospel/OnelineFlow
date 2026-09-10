@@ -15,6 +15,7 @@
     "@onelineflow/queue": "workspace:*",
     "@onelineflow/relay": "workspace:*",
     "@onelineflow/storage": "workspace:*",
-    "ioredis": "^5.4.2"
+    "ioredis": "^5.4.2",
+    "@onelineflow/api": "workspace:*"
   }
 }
