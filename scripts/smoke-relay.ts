@@ -22,7 +22,7 @@ import {
   sampleBacklog,
   type RelayDeps,
   type RelayOptions,
-} from '../services/relay/src/relay.js';
+} from '@onelineflow/relay/relay';
 
 const cfg = loadConfig();
 const logger = createLogger({

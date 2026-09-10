@@ -14,5 +14,15 @@
     "@onelineflow/db": "workspace:*",
     "@onelineflow/observability": "workspace:*",
     "@onelineflow/queue": "workspace:*"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    },
+    "./relay": {
+      "types": "./dist/relay.d.ts",
+      "default": "./dist/relay.js"
+    }
   }
 }

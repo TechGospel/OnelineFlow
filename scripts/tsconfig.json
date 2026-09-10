@@ -3,8 +3,8 @@
   "compilerOptions": {
     "noEmit": true,
     "composite": false,
-    "rootDir": "..",
+    "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["**/*.ts", "../services/relay/src/**/*.ts"]
+  "include": ["**/*.ts"]
 }

@@ -1,0 +1,20 @@
+{
+  "name": "@onelineflow/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Operational scripts and integration smoke tests. Not deployed.",
+  "scripts": {
+    "clean": "rm -rf *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@onelineflow/core": "workspace:*",
+    "@onelineflow/crypto": "workspace:*",
+    "@onelineflow/db": "workspace:*",
+    "@onelineflow/observability": "workspace:*",
+    "@onelineflow/queue": "workspace:*",
+    "@onelineflow/relay": "workspace:*",
+    "@onelineflow/storage": "workspace:*",
+    "ioredis": "^5.4.2"
+  }
+}
