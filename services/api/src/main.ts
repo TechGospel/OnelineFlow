@@ -10,6 +10,7 @@
  */
 
 import Fastify from 'fastify';
+import formbody from '@fastify/formbody';
 import { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { loadConfig, toAppError } from '@onelineflow/core';
@@ -18,10 +19,13 @@ import { EnvKeyring } from '@onelineflow/crypto';
 import { createLogger, metricsText, ShutdownManager } from '@onelineflow/observability';
 import { buildConnection, QueueRegistry } from '@onelineflow/queue';
 import { DocumentStore } from '@onelineflow/storage';
+import { QboClient, QboRateLimiter, type AuditSink } from '@onelineflow/qbo';
 import { registerIngestRoutes } from './routes/ingest.js';
 import { registerOAuthRoutes } from './routes/oauth.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerInvoiceRoutes } from './routes/invoices.js';
+import { registerVendorRoutes } from './routes/vendors.js';
+import { registerReviewUiRoutes } from './routes/review-ui.js';
 import { jwtAuthPlugin } from './plugins/jwt-auth.js';
 
 const cfg = loadConfig();
@@ -54,6 +58,67 @@ const documents = new DocumentStore({
   serverSideEncryption: cfg.S3_SERVER_SIDE_ENCRYPTION,
 });
 
+/**
+ * QuickBooks client for the vendor routes.
+ *
+ * The API makes only small, interactive QBO calls (look up a vendor, create
+ * one). It shares the same per-realm rate limiter as the workers, so an
+ * interactive burst still cannot crowd out posting.
+ */
+const auditSink: AuditSink = {
+  async record(entry) {
+    await db
+      .withTenant(entry.tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO qbo_api_calls
+             (tenant_id, realm_id, invoice_id, method, path, request_id, http_status,
+              intuit_tid, fault_code, duration_ms, attempt, request_body, response_body)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb)`,
+          [
+            entry.tenantId,
+            entry.realmId,
+            entry.invoiceId ?? null,
+            entry.method,
+            entry.path,
+            entry.requestId ?? null,
+            entry.httpStatus,
+            entry.intuitTid,
+            entry.faultCode,
+            entry.durationMs,
+            entry.attempt,
+            JSON.stringify(entry.requestBody ?? null),
+            JSON.stringify(entry.responseBody ?? null),
+          ],
+        );
+      })
+      .catch((err: unknown) => logger.warn({ err }, 'failed to write qbo audit row'));
+  },
+};
+
+const connectionRepository = new ConnectionRepository(keyring);
+
+const qbo = new QboClient(
+  {
+    environment: cfg.QBO_ENVIRONMENT,
+    minorVersion: cfg.QBO_MINOR_VERSION,
+    timeoutMs: cfg.QBO_REQUEST_TIMEOUT_MS,
+    oauth: {
+      clientId: cfg.QBO_CLIENT_ID,
+      clientSecret: cfg.QBO_CLIENT_SECRET,
+      redirectUri: cfg.QBO_REDIRECT_URI,
+      timeoutMs: cfg.QBO_REQUEST_TIMEOUT_MS,
+    },
+  },
+  new QboRateLimiter(redis, {
+    requestsPerMinute: cfg.QBO_RATE_LIMIT_PER_MIN,
+    maxConcurrent: cfg.QBO_MAX_CONCURRENT_PER_REALM,
+    leaseMs: cfg.QBO_REQUEST_TIMEOUT_MS * 2,
+    keyPrefix: cfg.QUEUE_PREFIX,
+  }),
+  connectionRepository,
+  auditSink,
+);
+
 const app = Fastify({
   // Fastify 5 takes a pre-built logger as `loggerInstance`; `logger` is for
   // options it should construct itself. Passing ours keeps the redaction
@@ -76,8 +141,9 @@ const deps = {
   queues,
   logger,
   invoices: new InvoiceRepository(),
-  connections: new ConnectionRepository(keyring),
+  connections: connectionRepository,
   documents,
+  qbo,
 };
 
 export type ApiDeps = typeof deps;
@@ -135,6 +201,10 @@ app.get('/metrics', async (_req, reply) =>
   reply.header('Content-Type', 'text/plain; version=0.0.4').send(await metricsText()),
 );
 
+// The review UI degrades to plain HTML forms with no JavaScript, so the API
+// must accept application/x-www-form-urlencoded as well as JSON.
+await app.register(formbody);
+
 // Registered BEFORE the routes so its onRequest hook runs for all of them.
 await app.register(jwtAuthPlugin, {
   deps,
@@ -151,6 +221,8 @@ registerOAuthRoutes(app, deps);
 registerIngestRoutes(app, deps);
 registerWebhookRoutes(app, deps);
 registerInvoiceRoutes(app, deps);
+registerVendorRoutes(app, deps);
+registerReviewUiRoutes(app, deps);
 
 shutdown.register({
   name: 'http-server',
