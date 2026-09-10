@@ -121,6 +121,19 @@ export const duplicatePostsPrevented = new Counter({
   registers: [registry],
 });
 
+/**
+ * Unix timestamp of the maintenance scheduler's last successful sweep.
+ *
+ * A gauge of "when did this last work" rather than a counter of runs. It lets
+ * one alert cover every failure mode at once — crashed, wedged, descheduled,
+ * or silently erroring — because all of them stop the timestamp advancing.
+ */
+export const schedulerLastSweep = new Gauge({
+  name: 'onelineflow_scheduler_last_sweep_timestamp_seconds',
+  help: 'Unix time of the last successful maintenance sweep',
+  registers: [registry],
+});
+
 export async function metricsText(): Promise<string> {
   return registry.metrics();
 }

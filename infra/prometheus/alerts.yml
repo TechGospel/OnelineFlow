@@ -1,0 +1,189 @@
+# Prometheus alerting rules.
+#
+# Every rule here is one someone would actually be woken for. Rules that fire
+# without a clear action get muted within a fortnight and then the real ones get
+# muted with them, so the bar for `severity: page` is deliberately high.
+#
+# The organising idea is to alert on SYMPTOMS the tenant experiences, not on
+# causes. "Invoices are not reaching QuickBooks" is actionable at 3am; "CPU is
+# high" is not.
+
+groups:
+  - name: onelineflow.critical
+    interval: 30s
+    rules:
+      # The single worst outcome the platform can produce. Any nonzero rate
+      # means a guard fired, which is the system working — but a SUSTAINED rate
+      # means something upstream regressed and is generating duplicate attempts.
+      - alert: DuplicatePostAttemptsSustained
+        expr: sum(rate(onelineflow_duplicate_posts_prevented_total[15m])) > 0.1
+        for: 15m
+        labels: { severity: page }
+        annotations:
+          summary: 'Duplicate post attempts are being blocked at a sustained rate'
+          description: >-
+            The guards are holding, but something is repeatedly attempting to
+            post the same invoice twice. Check for a stuck posting worker, a
+            redelivery loop in the relay, or a regression in the CAS claim.
+            Guard breakdown: {{ $labels.guard }}.
+          runbook: docs/runbooks/duplicate-posts.md
+
+      # The relay is the single point through which all work flows. Backlog
+      # COUNT is not the signal — a relay wedged on one poisoned row shows a
+      # small, stable count while latency climbs without bound. Age is the
+      # signal.
+      - alert: OutboxBacklogAgeing
+        expr: onelineflow_outbox_oldest_age_seconds > 300
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: 'Oldest unpublished outbox row is over 5 minutes old'
+          description: >-
+            The relay is not draining. Nothing downstream runs while this is
+            true: no extraction, no posting. Check relay pod health and whether
+            one row is failing repeatedly (outbox.attempts).
+
+      - alert: OutboxRelayStopped
+        expr: absent(onelineflow_outbox_oldest_age_seconds) or increase(onelineflow_outbox_backlog[10m]) > 1000
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: 'Outbox relay appears to have stopped'
+          description: >-
+            Either the relay is not reporting metrics at all, or the backlog is
+            growing unchecked. The pipeline is stalled.
+
+      - alert: ApiDown
+        expr: up{job="onelineflow-api"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: 'API is not scraping'
+
+  - name: onelineflow.quickbooks
+    interval: 30s
+    rules:
+      # A tenant whose grant died cannot post anything. Silent until someone
+      # notices a missing bill, which is usually at month end.
+      - alert: QboAuthFailures
+        expr: |
+          sum(rate(onelineflow_qbo_requests_total{outcome="failure",fault_code=~"3200|3100|100"}[10m])) > 0
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: 'QuickBooks is rejecting our credentials'
+          description: >-
+            One or more tenants need to reconnect QuickBooks. Check
+            qbo_connections for status='reauth_required'.
+
+      # Sustained throttling means we are crowding the tenant's own integrations
+      # as well as our own posting path.
+      - alert: QboThrottled
+        expr: sum(rate(onelineflow_qbo_requests_total{fault_code="3001"}[10m])) > 0.5
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'QuickBooks is rate limiting us'
+          description: >-
+            Reduce QBO_RATE_LIMIT_PER_MIN or investigate what is generating the
+            call volume. The reconciler self-throttles; the posting workers do
+            not back off beyond the shared token bucket.
+
+      - alert: QboLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(onelineflow_qbo_request_duration_seconds_bucket[10m])) by (le, entity)
+          ) > 15
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'QuickBooks p95 latency above 15s for {{ $labels.entity }}'
+
+  - name: onelineflow.pipeline
+    interval: 60s
+    rules:
+      - alert: TenantPipelineStalled
+        expr: onelineflow_tenant_pipeline_stalled == 1
+        for: 30m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'Tenant {{ $labels.tenant_id }} pipeline stalled ({{ $labels.reason }})'
+          description: >-
+            Invoices have been stuck beyond the SLO for 30 minutes. Note that
+            needs_review and pending_approval are excluded from this metric —
+            those wait on a human and are not a fault.
+
+      # Extraction failing outright is different from extraction being
+      # uncertain. The latter is the system working as designed.
+      - alert: ExtractionErrorRate
+        expr: |
+          sum(rate(onelineflow_extraction_duration_seconds_count{outcome="error"}[15m]))
+            /
+          clamp_min(sum(rate(onelineflow_extraction_duration_seconds_count[15m])), 0.001)
+            > 0.1
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'Over 10% of extractions are erroring'
+
+      # A collapse in confidence usually means a model change or a provider
+      # degradation, and it shows up as everything going to human review.
+      - alert: ConfidenceCollapse
+        expr: |
+          histogram_quantile(0.5,
+            sum(rate(onelineflow_extraction_confidence_bucket[30m])) by (le)
+          ) < 0.8
+        for: 30m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'Median extraction confidence has fallen below 0.8'
+          description: >-
+            Review volume will be climbing. Check for a model version change or
+            a change in the mix of incoming documents.
+
+      - alert: QueueDepthGrowing
+        expr: sum(onelineflow_queue_depth{state="waiting"}) by (queue) > 10000
+        for: 20m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'Queue {{ $labels.queue }} has over 10k waiting jobs'
+
+  - name: onelineflow.cost
+    interval: 300s
+    rules:
+      # Cost alerts are tickets, never pages. Nobody should be woken for spend.
+      - alert: AiSpendRateHigh
+        expr: sum(rate(onelineflow_ai_cost_micros_total[1h])) * 3600 > 50000000
+        for: 1h
+        labels: { severity: ticket }
+        annotations:
+          summary: 'AI spend exceeding 50 currency units/hour'
+          description: >-
+            Check for a tenant bulk-uploading an archive, or a drop in the
+            second-opinion skip rate.
+
+  - name: onelineflow.infrastructure
+    interval: 60s
+    rules:
+      - alert: DatabasePoolSaturated
+        expr: onelineflow_db_pool{state="waiting"} > 5
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'Connections are queueing for the database pool'
+          description: >-
+            Raise DB_POOL_MAX or reduce WORKER_CONCURRENCY. Sustained waiting
+            means requests are being served slower than they arrive.
+
+      # Fires long before writes start failing. Losing this race means every
+      # INSERT into invoices fails at 00:00 on the 1st.
+      - alert: PartitionRunwayShort
+        expr: |
+          time() - onelineflow_scheduler_last_sweep_timestamp_seconds > 10800
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: 'Maintenance scheduler has not swept in 3 hours'
+          description: >-
+            Partition creation and refresh-token expiry checks are not running.
+            Neither is urgent within hours, but both are severe within weeks.

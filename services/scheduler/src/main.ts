@@ -13,7 +13,12 @@ import { createServer } from 'node:http';
 import { loadConfig } from '@onelineflow/core';
 import { ConnectionRepository, Database } from '@onelineflow/db';
 import { EnvKeyring } from '@onelineflow/crypto';
-import { createLogger, metricsText, ShutdownManager } from '@onelineflow/observability';
+import {
+  createLogger,
+  metricsText,
+  schedulerLastSweep,
+  ShutdownManager,
+} from '@onelineflow/observability';
 import { DEFAULT_MAINTENANCE, runMaintenance } from './tasks.js';
 
 const cfg = loadConfig();
@@ -46,6 +51,7 @@ async function sweep(): Promise<void> {
   try {
     lastResults = await runMaintenance(db, connections, logger, DEFAULT_MAINTENANCE);
     lastSweepAt = new Date();
+    schedulerLastSweep.set(Math.floor(lastSweepAt.getTime() / 1000));
   } catch (err) {
     logger.error({ err }, 'maintenance sweep failed entirely');
   }
