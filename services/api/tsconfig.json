@@ -6,11 +6,26 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
-    { "path": "../../packages/core" },
-    { "path": "../../packages/crypto" },
-    { "path": "../../packages/db" },
-    { "path": "../../packages/observability" },
-    { "path": "../../packages/qbo" },
-    { "path": "../../packages/queue" }
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/crypto"
+    },
+    {
+      "path": "../../packages/db"
+    },
+    {
+      "path": "../../packages/observability"
+    },
+    {
+      "path": "../../packages/qbo"
+    },
+    {
+      "path": "../../packages/queue"
+    },
+    {
+      "path": "../../packages/storage"
+    }
   ]
 }
